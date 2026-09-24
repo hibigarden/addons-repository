@@ -7,6 +7,19 @@
    `description`, `version`, `apiVersion`, `kind`, `authors`, and `path` (for
    example, `addons/hello`). Keep those details in sync with
    `hibi-addon.json`. Use an ID that does not conflict with a built-in addon.
+
+   ```json
+   [{
+     "id": "hello",
+     "name": "Hello",
+     "description": "A greeting addon.",
+     "version": "1.0.0",
+     "apiVersion": 2,
+     "kind": "extension",
+     "authors": [{ "displayName": "Your name" }],
+     "path": "addons/hello"
+   }]
+   ```
 3. Test the folder using Hibi's **Install addon…** command. Enable it, use it,
    disable it, and check that its README explains those steps. Hibi does not
    run build scripts during installation; native handlers cannot be sideloaded.
