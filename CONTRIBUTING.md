@@ -1,8 +1,10 @@
 # Contributing addons
 
 1. Put one addon in `addons/<id>/`, where `<id>` matches its
-   `hibi-addon.json` ID. Include a user-facing `README.md` and every file
-   needed to install it, including its compiled entry file.
+   `hibi-addon.json` ID. Include a user-facing `README.md`, a copy of the MIT
+   `LICENSE`, and every file needed to install it, including its compiled entry
+   file. Hibi installs only this folder, so its license notice must travel with
+   it.
 2. Add one entry to `catalog.json` with the addon's `id`, `name`,
    `description`, `version`, `apiVersion`, `kind`, `authors`, and `path` (for
    example, `addons/hello`). Keep those details in sync with
