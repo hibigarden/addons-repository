@@ -11,7 +11,7 @@ A package is a folder that Hibi can install without building anything. It needs:
 - its license in `LICENSE.txt` or `LICENSE.md`, because Hibi installs only the package folder;
 - every file the addon uses, including compiled JavaScript for extensions.
 
-Hibi installs only `.js`, `.mjs`, `.json`, `.css`, `.md`, `.txt`, `.svg`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.woff`, `.woff2`, `.ttf`, `.mp3`, `.ogg`, and `.wav` files. A file without an extension, such as `LICENSE`, stops the installation. Native handlers, importers, and addon windows cannot be installed.
+Hibi installs only `.js`, `.mjs`, `.json`, `.css`, `.md`, `.txt`, `.svg`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.woff`, `.woff2`, `.ttf`, `.mp3`, `.ogg`, and `.wav` files. A file without an extension, such as `LICENSE`, stops the installation. A package can hold up to 1,000 files and folders, 5 MiB per file, and 25 MiB in total. Native handlers, importers, and addon windows cannot be installed.
 
 The [addon starter](https://github.com/hibigarden/addon-starter) follows these rules and checks them for you.
 
@@ -19,7 +19,7 @@ The [addon starter](https://github.com/hibigarden/addon-starter) follows these r
 
 Put the package in this repository when you want us to host it. Add the folder as `addons/<id>/`, where `<id>` matches the ID in `hibi-addon.json`, and set `path` in the catalog entry.
 
-Link to your own repository when you want to keep publishing there. Set `repository` to the repository URL, the full 40-character commit you want listed, and the folder that holds `hibi-addon.json` if it is not the repository root. When someone installs the addon from the directory, Hibi installs that exact commit, so open a new pull request to list a newer one.
+Link to your own repository when you want to keep publishing there. Set `repository` to the GitHub repository URL, such as `https://github.com/you/hello-theme`, the full 40-character commit you want listed, and the folder that holds `hibi-addon.json` if it is not the repository root. When someone installs the addon from the directory, Hibi installs that exact commit, so open a new pull request to list a newer one.
 
 Link to a ZIP file when you publish releases elsewhere. Set `download` to its HTTPS URL, its size in bytes, and its lowercase SHA-256 digest. Hibi refuses a directory download that does not match, so the file must never change. A release asset works well; a branch archive does not, because it changes with every commit.
 

@@ -3,7 +3,7 @@
 // compares linked repositories and downloads with their catalog entries.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, relative, resolve, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -37,14 +37,24 @@ const ALLOWED_FILES = new Set(
     ' ',
   ),
 )
-const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+// Limits and formats match Hibi's directory parser and package inventory
+// (src/shared/addon-directory.ts and src/shared/addon-package.ts), so an entry
+// that passes here cannot make Hibi reject the whole directory.
+const MAX_CATALOG_BYTES = 1024 * 1024
+const MAX_ENTRIES = 500
+const MAX_ADDON_BYTES = 25 * 1024 * 1024
+const MAX_ADDON_FILE_BYTES = 5 * 1024 * 1024
+const MAX_ADDON_MANIFEST_BYTES = 64 * 1024
+const MAX_ADDON_ENTRIES = 1000
 const ID = /^[a-z][a-z0-9-]{0,47}$/
 const COMMIT = /^[0-9a-f]{40}$/
 const SHA256 = /^[0-9a-f]{64}$/
-const FOLDER =
-  /^(?:[A-Za-z0-9_][A-Za-z0-9._-]*)(?:\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/
+const GITHUB_REPOSITORY =
+  /^https:\/\/github\.com\/[A-Za-z\d_.-]+\/[A-Za-z\d_.-]+\/?$/
+const AUTHOR_KEYS = ['displayName', 'github', 'discordId', 'role']
 
 const https = (value) => {
+  if (typeof value !== 'string' || value.length > 8192) return false
   try {
     const url = new URL(value)
     return (
@@ -56,6 +66,34 @@ const https = (value) => {
 }
 const text = (value, max) =>
   typeof value === 'string' && !!value.trim() && value.length <= max
+/** Hibi's validAddonPath: portable names with no hidden parts. */
+const validPath = (value) =>
+  typeof value === 'string' &&
+  value.length < 2048 &&
+  !/[%#]/.test(value) &&
+  value
+    .split('/')
+    .every(
+      (part) =>
+        !!part &&
+        !part.startsWith('.') &&
+        !/[\\:?<>"|*]|\p{Cc}/u.test(part) &&
+        !/[. ]$/.test(part) &&
+        !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part),
+    )
+const author = (value) =>
+  !!value &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  Object.keys(value).every((key) => AUTHOR_KEYS.includes(key)) &&
+  text(value.displayName, 128) &&
+  (value.github === undefined ||
+    (typeof value.github === 'string' &&
+      /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(value.github))) &&
+  (value.discordId === undefined ||
+    (typeof value.discordId === 'string' &&
+      /^\d{1,24}$/.test(value.discordId))) &&
+  (value.role === undefined || text(value.role, 128))
 const hidden = (name) =>
   name.startsWith('.') ||
   ['node_modules', '__macosx'].includes(name.toLowerCase())
@@ -82,9 +120,9 @@ function checkEntry(entry, index) {
       throw new Error(`${label} has an unknown field: ${key}.`)
   if (!ID.test(entry.id ?? '')) throw new Error(`${label} needs a valid id.`)
   if (
-    !text(entry.name, 100) ||
-    !text(entry.description, 500) ||
-    !text(entry.version, 40)
+    !text(entry.name, 128) ||
+    !text(entry.description, 2048) ||
+    !text(entry.version, 64)
   )
     throw new Error(`${label} needs a name, description, and version.`)
   if (entry.apiVersion !== 1 && entry.apiVersion !== 2)
@@ -94,10 +132,13 @@ function checkEntry(entry, index) {
   if (
     !Array.isArray(entry.authors) ||
     !entry.authors.length ||
-    entry.authors.some((author) => !text(author?.displayName, 100))
+    entry.authors.length > 32 ||
+    !entry.authors.every(author)
   )
-    throw new Error(`${label} needs authors with display names.`)
-  if (!text(entry.license, 100))
+    throw new Error(
+      `${label} needs 1 to 32 authors with a display name and valid github, discordId, and role fields.`,
+    )
+  if (!text(entry.license, 128))
     throw new Error(`${label} needs an SPDX license expression.`)
   if (entry.homepage !== undefined && !https(entry.homepage))
     throw new Error(`${label} needs an HTTPS homepage.`)
@@ -115,12 +156,17 @@ function checkEntry(entry, index) {
       Object.keys(repository).some(
         (key) => !['url', 'commit', 'path'].includes(key),
       ) ||
-      !https(repository.url) ||
+      typeof repository.url !== 'string' ||
+      !GITHUB_REPOSITORY.test(repository.url) ||
+      repository.url
+        .split('/')
+        .slice(3)
+        .some((part) => part === '.' || part === '..') ||
       !COMMIT.test(repository.commit ?? '') ||
-      (repository.path !== undefined && !FOLDER.test(repository.path))
+      (repository.path !== undefined && !validPath(repository.path))
     )
       throw new Error(
-        `${label} needs a repository with an HTTPS url, a full 40-character commit, and an optional folder path.`,
+        `${label} needs a repository with a https://github.com/<owner>/<repo> url, a full 40-character commit, and an optional folder path.`,
       )
   }
   if (download !== undefined) {
@@ -133,7 +179,7 @@ function checkEntry(entry, index) {
       !SHA256.test(download.sha256 ?? '') ||
       !Number.isSafeInteger(download.size) ||
       download.size < 1 ||
-      download.size > MAX_DOWNLOAD_BYTES
+      download.size > MAX_ADDON_BYTES
     )
       throw new Error(
         `${label} needs a download with an HTTPS url, a lowercase sha256, and a size up to 25 MiB.`,
@@ -149,12 +195,49 @@ function sameMetadata(label, entry, manifest) {
       )
 }
 
+/** Applies the path and size rules Hibi enforces when it reads a package. */
+function checkLimits(label, folder, own) {
+  const seen = new Map()
+  let bytes = 0
+  for (const path of own) {
+    if (!validPath(path))
+      throw new Error(`${label}: ${path} is not a valid path.`)
+    const parts = path.split('/')
+    for (let index = 1; index <= parts.length; index++) {
+      const prefix = parts.slice(0, index).join('/')
+      const key = prefix
+        .normalize('NFC')
+        .toUpperCase()
+        .toLowerCase()
+        .normalize('NFC')
+      if (seen.has(key) && seen.get(key) !== prefix)
+        throw new Error(
+          `${label}: ${prefix} and ${seen.get(key)} differ only by case.`,
+        )
+      seen.set(key, prefix)
+    }
+    const size = statSync(join(folder, path)).size
+    bytes += size
+    if (size > MAX_ADDON_FILE_BYTES)
+      throw new Error(`${label}: ${path} is larger than 5 MiB.`)
+    if (path === 'hibi-addon.json' && size > MAX_ADDON_MANIFEST_BYTES)
+      throw new Error(`${label}: hibi-addon.json is larger than 64 KiB.`)
+  }
+  if (seen.size > MAX_ADDON_ENTRIES)
+    throw new Error(
+      `${label}: a package can contain up to 1,000 files and folders.`,
+    )
+  if (bytes > MAX_ADDON_BYTES)
+    throw new Error(`${label}: the package is larger than 25 MiB.`)
+}
+
 function checkPackage(root, entry) {
   const folder = join(root, entry.path)
   const label = entry.path
   if (!existsSync(join(folder, 'hibi-addon.json')))
     throw new Error(`${label}: hibi-addon.json is missing.`)
   const own = files(folder)
+  checkLimits(label, folder, own)
   for (const path of own)
     if (!ALLOWED_FILES.has(extname(path).toLowerCase()))
       throw new Error(
@@ -201,12 +284,6 @@ async function checkRemote(entry) {
     const match = new URL(url).pathname.match(
       /^\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
     )
-    if (new URL(url).hostname !== 'github.com' || !match) {
-      console.log(
-        `skip ${entry.id}: remote checks support GitHub repositories only.`,
-      )
-      return
-    }
     const raw = `https://raw.githubusercontent.com/${match[1]}/${match[2]}/${commit}/${path ? `${path}/` : ''}hibi-addon.json`
     sameMetadata(
       entry.id,
@@ -229,9 +306,12 @@ async function checkRemote(entry) {
 
 /** Returns the catalog after checking it and every nested package. */
 export async function checkDirectory(root, { remote = false } = {}) {
-  const catalog = JSON.parse(readFileSync(join(root, 'catalog.json'), 'utf8'))
-  if (!Array.isArray(catalog))
-    throw new Error('catalog.json must contain an array.')
+  const source = readFileSync(join(root, 'catalog.json'))
+  if (source.length > MAX_CATALOG_BYTES)
+    throw new Error('catalog.json must be 1 MiB or smaller.')
+  const catalog = JSON.parse(source.toString('utf8'))
+  if (!Array.isArray(catalog) || catalog.length > MAX_ENTRIES)
+    throw new Error('catalog.json must contain an array of up to 500 entries.')
   catalog.forEach(checkEntry)
   const ids = catalog.map((entry) => entry.id)
   const duplicate = ids.find((id, index) => ids.indexOf(id) !== index)

@@ -102,3 +102,42 @@ test('unknown fields and duplicate ids are refused', async (t) => {
     /more than once/,
   )
 })
+
+test('entries Hibi would refuse fail here too', async (t) => {
+  const [doom, typing] = catalog()
+  const refused = [
+    [
+      {
+        ...doom,
+        repository: { ...doom.repository, url: 'https://gitlab.com/a/b' },
+      },
+      /github\.com/,
+    ],
+    [
+      { ...doom, repository: { ...doom.repository, path: 'addon/con' } },
+      /optional folder path/,
+    ],
+    [{ ...doom, authors: [{ displayName: 'A', discordId: 1 }] }, /authors/],
+    [{ ...doom, authors: [{ displayName: 'A', github: '-a' }] }, /authors/],
+    [{ ...doom, authors: [{ displayName: 'A', email: 'a@b.c' }] }, /authors/],
+    [
+      { ...doom, authors: Array(33).fill({ displayName: 'A' }) },
+      /1 to 32 authors/,
+    ],
+  ]
+  for (const [entry, message] of refused)
+    await assert.rejects(checkDirectory(scratch(t, [entry, typing])), message)
+})
+
+test('nested packages stay within Hibi package limits', async (t) => {
+  const [doom, typing] = catalog()
+  const large = scratch(t, [doom, typing])
+  writeFileSync(
+    join(large, 'addons/typing-speed/big.txt'),
+    Buffer.alloc(5 * 1024 * 1024 + 1),
+  )
+  await assert.rejects(checkDirectory(large), /larger than 5 MiB/)
+  const named = scratch(t, [doom, typing])
+  writeFileSync(join(named, 'addons/typing-speed/50%.md'), '')
+  await assert.rejects(checkDirectory(named), /50%\.md is not a valid path/)
+})
