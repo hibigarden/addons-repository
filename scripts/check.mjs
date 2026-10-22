@@ -306,8 +306,11 @@ function checkPackage(root, entry) {
     files(folder),
     (path) => readFileSync(join(folder, path)),
     (path) =>
+      // Parsing only; the child gets no tokens or keys from this environment.
       execFileSync(process.execPath, ['--check', join(folder, path)], {
         stdio: 'pipe',
+        env: { PATH: process.env.PATH },
+        timeout: 10_000,
       }),
   )
 }
@@ -319,13 +322,19 @@ const canonical = (value) => {
 }
 
 /** Reads at most `limit` bytes so a hostile link cannot exhaust CI. */
-async function fetchBytes(url, limit, { fetch: get = fetch, headers } = {}) {
+async function fetchBytes(
+  url,
+  limit,
+  { fetch: get = fetch, headers, redirect = 'error' } = {},
+) {
   const response = await get(url, {
-    redirect: 'follow',
+    redirect,
     headers,
     signal: AbortSignal.timeout(60_000),
   })
   if (!response.ok) throw new Error(`${url} returned ${response.status}.`)
+  if (response.url && new URL(response.url).protocol !== 'https:')
+    throw new Error(`${url} redirected away from HTTPS.`)
   const chunks = []
   let size = 0
   for await (const chunk of response.body ?? []) {
@@ -518,7 +527,11 @@ function zipFiles(label, zip) {
 }
 
 async function downloadFiles(entry, options) {
-  const zip = await fetchBytes(entry.download.url, entry.download.size, options)
+  // Release assets redirect to a CDN; the final address must still be HTTPS.
+  const zip = await fetchBytes(entry.download.url, entry.download.size, {
+    ...options,
+    redirect: 'follow',
+  })
   if (zip.length !== entry.download.size)
     throw new Error(
       `${entry.id}: the download is ${zip.length} bytes, not ${entry.download.size}.`,

@@ -14,6 +14,9 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkDirectory, inspectDirectory, TRUST_KEYS } from './check.mjs'
 
+/** The directory's package key; the workflow signs with this key only. */
+export const CI_KEY_ID = '8dc7673025d00464'
+
 /** Loads an Ed25519 key that Hibi already trusts; any other key is refused. */
 export function signingKey(pem, keys = TRUST_KEYS) {
   const privateKey = createPrivateKey(pem)
@@ -84,7 +87,9 @@ if (
       throw new Error('RESIGN_ID must be a catalog entry id.')
     if (!process.env.HIBI_ADDON_SIGNING_KEY)
       throw new Error('Set HIBI_ADDON_SIGNING_KEY to the signing key.')
-    const key = signingKey(process.env.HIBI_ADDON_SIGNING_KEY)
+    const key = signingKey(process.env.HIBI_ADDON_SIGNING_KEY, {
+      [CI_KEY_ID]: TRUST_KEYS[CI_KEY_ID],
+    })
     const signed = await signDirectory(root, { key, resign })
     console.log(
       signed.length

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { createHash, generateKeyPairSync } from 'node:crypto'
 import {
   cpSync,
@@ -12,7 +13,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { checkDirectory, TRUST_KEYS } from '../scripts/check.mjs'
-import { signDirectory, signingKey } from '../scripts/sign.mjs'
+import { CI_KEY_ID, signDirectory, signingKey } from '../scripts/sign.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const typing = JSON.parse(
@@ -48,6 +49,20 @@ const read = (directory, path) => readFileSync(join(directory, path), 'utf8')
 const fetch = () => {
   throw new Error('No network access is expected.')
 }
+
+test('the workflow signer accepts only the directory key', () => {
+  const result = spawnSync(process.execPath, ['scripts/sign.mjs'], {
+    cwd: root,
+    env: { PATH: process.env.PATH, HIBI_ADDON_SIGNING_KEY: pem },
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /does not trust signing key/)
+  assert.throws(
+    () => signingKey(pem, { [CI_KEY_ID]: TRUST_KEYS[CI_KEY_ID] }),
+    /does not trust signing key/,
+  )
+})
 
 test('the signer refuses keys Hibi does not trust', () => {
   assert.throws(() => signingKey(pem), /does not trust signing key/)
