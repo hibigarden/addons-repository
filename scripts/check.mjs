@@ -49,6 +49,10 @@ const MAX_ADDON_BYTES = 25 * 1024 * 1024
 const MAX_ADDON_FILE_BYTES = 5 * 1024 * 1024
 const MAX_ADDON_MANIFEST_BYTES = 64 * 1024
 const MAX_ADDON_ENTRIES = 1000
+// Hibi's archive inventory limits (src/main/addon-inventory.ts).
+const MAX_INVENTORY_ENTRIES = 5000
+const MAX_INVENTORY_BYTES = 64 * 1024 * 1024
+const MAX_DEPTH = 12
 const ID = /^[a-z][a-z0-9-]{0,47}$/
 const COMMIT = /^[0-9a-f]{40}$/
 const SHA256 = /^[0-9a-f]{64}$/
@@ -75,21 +79,28 @@ const https = (value) => {
 }
 const text = (value, max) =>
   typeof value === 'string' && !!value.trim() && value.length <= max
-/** Hibi's validAddonPath: portable names with no hidden parts. */
-const validPath = (value) =>
+/** Hibi's validAddonInventoryPath: portable names, including hidden ones. */
+const inventoryPath = (value) =>
   typeof value === 'string' &&
   value.length < 2048 &&
-  !/[%#]/.test(value) &&
   value
     .split('/')
     .every(
       (part) =>
         !!part &&
-        !part.startsWith('.') &&
+        part !== '.' &&
+        part !== '..' &&
         !/[\\:?<>"|*]|\p{Cc}/u.test(part) &&
         !/[. ]$/.test(part) &&
         !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part),
     )
+/** Hibi's validAddonPath: inventory paths with no hidden parts, % or #. */
+const validPath = (value) =>
+  inventoryPath(value) &&
+  !/[%#]/.test(value) &&
+  value.split('/').every((part) => !part.startsWith('.'))
+const folded = (path) =>
+  path.normalize('NFC').toUpperCase().toLowerCase().normalize('NFC')
 const author = (value) =>
   !!value &&
   typeof value === 'object' &&
@@ -214,11 +225,7 @@ function checkLimits(label, sizes) {
     const parts = path.split('/')
     for (let index = 1; index <= parts.length; index++) {
       const prefix = parts.slice(0, index).join('/')
-      const key = prefix
-        .normalize('NFC')
-        .toUpperCase()
-        .toLowerCase()
-        .normalize('NFC')
+      const key = folded(prefix)
       if (seen.has(key) && seen.get(key) !== prefix)
         throw new Error(
           `${label}: ${prefix} and ${seen.get(key)} differ only by case.`,
@@ -435,7 +442,11 @@ async function repositoryFiles(entry, options) {
   return files
 }
 
-/** Reads a ZIP's stored and deflated files with the same limits as Hibi. */
+/**
+ * Reads a ZIP the way Hibi's inventory does: every entry's path, mode, and
+ * declared size is checked before anything is inflated, and hidden entries are
+ * checked but not kept.
+ */
 function zipFiles(label, zip) {
   let end = -1
   for (let at = zip.length - 22; at >= Math.max(0, zip.length - 65557); at--)
@@ -445,26 +456,90 @@ function zipFiles(label, zip) {
     }
   if (end < 0) throw new Error(`${label}: the download is not a ZIP file.`)
   const count = zip.readUInt16LE(end + 10)
+  if (count > MAX_INVENTORY_ENTRIES)
+    throw new Error(`${label}: the ZIP has more than 5,000 entries.`)
+  const invalid = (name) =>
+    new Error(
+      `${label}: ${name} is a link, special, encrypted, or invalid ZIP entry.`,
+    )
+  const entries = []
+  const seen = new Map()
+  const explicit = new Map()
+  let declared = 0
   let at = zip.readUInt32LE(end + 16)
-  if (count > 5000) throw new Error(`${label}: the ZIP has too many entries.`)
-  const files = new Map()
   for (let index = 0; index < count; index++) {
-    if (zip.readUInt32LE(at) !== 0x02014b50)
+    if (at + 46 > zip.length || zip.readUInt32LE(at) !== 0x02014b50)
       throw new Error(`${label}: the ZIP directory is invalid.`)
     const flags = zip.readUInt16LE(at + 8)
     const method = zip.readUInt16LE(at + 10)
-    const crc = zip.readUInt32LE(at + 16)
-    const compressed = zip.readUInt32LE(at + 20)
     const length = zip.readUInt32LE(at + 24)
     const nameLength = zip.readUInt16LE(at + 28)
-    const offset = zip.readUInt32LE(at + 42)
+    const attributes = zip.readUInt32LE(at + 38)
     const name = zip.subarray(at + 46, at + 46 + nameLength).toString('utf8')
+    const folder = name.endsWith('/')
+    const path = folder ? name.slice(0, -1) : name
+    const mode = (attributes >>> 16) & 0xf000
+    if (
+      flags & 1 ||
+      attributes & 0x400 ||
+      ![0, 0x8000, 0x4000].includes(mode) ||
+      (mode === 0x4000 && !folder) ||
+      (mode === 0x8000 && folder) ||
+      ![0, 8].includes(method) ||
+      (folder && length)
+    )
+      throw invalid(name)
+    if (!inventoryPath(path))
+      throw new Error(`${label}: ${name} is not a valid path.`)
+    const parts = path.split('/')
+    if (explicit.has(folded(path)))
+      throw new Error(`${label}: ${name} conflicts with another entry.`)
+    explicit.set(folded(path), folder)
+    for (let part = 1; part <= parts.length; part++) {
+      const prefix = parts.slice(0, part).join('/')
+      const key = folded(prefix)
+      if (seen.has(key) && seen.get(key) !== prefix)
+        throw new Error(`${label}: ${name} conflicts with another entry.`)
+      seen.set(key, prefix)
+    }
+    declared += length
+    if (length > MAX_ADDON_FILE_BYTES)
+      throw new Error(`${label}: ${name} is larger than 5 MiB.`)
+    if (declared > MAX_INVENTORY_BYTES)
+      throw new Error(`${label}: the ZIP holds more than 64 MiB.`)
+    const hiddenEntry = parts.some(hidden)
+    if (!hiddenEntry && parts.length - (folder ? 0 : 1) > MAX_DEPTH)
+      throw new Error(`${label}: ${name} is more than 12 folders deep.`)
+    if (!folder)
+      entries.push({
+        path,
+        keep: !hiddenEntry,
+        method,
+        length,
+        crc: zip.readUInt32LE(at + 16),
+        compressed: zip.readUInt32LE(at + 20),
+        offset: zip.readUInt32LE(at + 42),
+      })
     at +=
       46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32)
-    if (name.endsWith('/')) continue
-    if (flags & 1 || ![0, 8].includes(method) || length > MAX_ADDON_FILE_BYTES)
-      throw new Error(`${label}: ${name} cannot be read.`)
-    if (zip.readUInt32LE(offset) !== 0x04034b50)
+  }
+  for (const { path } of entries) {
+    const parts = path.split('/')
+    for (let part = 1; part < parts.length; part++)
+      if (explicit.get(folded(parts.slice(0, part).join('/'))) === false)
+        throw new Error(`${label}: ${path} conflicts with another entry.`)
+  }
+  const files = new Map()
+  for (const {
+    path,
+    keep,
+    method,
+    length,
+    crc,
+    compressed,
+    offset,
+  } of entries) {
+    if (offset + 30 > zip.length || zip.readUInt32LE(offset) !== 0x04034b50)
       throw new Error(`${label}: the ZIP directory is invalid.`)
     const start =
       offset +
@@ -472,14 +547,18 @@ function zipFiles(label, zip) {
       zip.readUInt16LE(offset + 26) +
       zip.readUInt16LE(offset + 28)
     const data = zip.subarray(start, start + compressed)
-    const content =
-      method === 0
-        ? data
-        : inflateRawSync(data, { maxOutputLength: MAX_ADDON_FILE_BYTES })
+    let content
+    try {
+      content =
+        method === 0
+          ? data
+          : inflateRawSync(data, { maxOutputLength: Math.max(1, length) })
+    } catch {
+      throw new Error(`${label}: ${path} is damaged.`)
+    }
     if (content.length !== length || crc32(content) !== crc)
-      throw new Error(`${label}: ${name} is damaged.`)
-    if (files.has(name)) throw new Error(`${label}: ${name} appears twice.`)
-    files.set(name, content)
+      throw new Error(`${label}: ${path} is damaged.`)
+    if (keep) files.set(path, content)
   }
   return files
 }
@@ -492,9 +571,7 @@ async function downloadFiles(entry, options) {
     )
   if (createHash('sha256').update(zip).digest('hex') !== entry.download.sha256)
     throw new Error(`${entry.id}: the download does not match its sha256.`)
-  const all = [...zipFiles(entry.id, zip)].filter(
-    ([path]) => !path.split('/').some(hidden),
-  )
+  const all = [...zipFiles(entry.id, zip)]
   const manifests = all.filter(
     ([path]) => path.split('/').at(-1) === 'hibi-addon.json',
   )

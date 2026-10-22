@@ -179,7 +179,11 @@ function storedZip(files) {
   const local = []
   const central = []
   let offset = 0
-  for (const [name, bytes] of files) {
+  for (const [
+    name,
+    bytes,
+    { declared = bytes.length, mode = 0 } = {},
+  ] of files) {
     const path = Buffer.from(name)
     const header = Buffer.alloc(30)
     header.writeUInt32LE(0x04034b50, 0)
@@ -191,8 +195,9 @@ function storedZip(files) {
     entry.writeUInt32LE(0x02014b50, 0)
     entry.writeUInt32LE(crc32(bytes), 16)
     entry.writeUInt32LE(bytes.length, 20)
-    entry.writeUInt32LE(bytes.length, 24)
+    entry.writeUInt32LE(declared, 24)
     entry.writeUInt16LE(path.length, 28)
+    entry.writeUInt32LE(mode * 0x10000, 38)
     entry.writeUInt32LE(offset, 42)
     local.push(header, path, bytes)
     central.push(entry, path)
@@ -251,5 +256,62 @@ test('remote checks read download archives and match them to the signature', asy
       fetch: async () => new Response(extra),
     }),
     /files do not match the signature/,
+  )
+})
+
+test('remote checks refuse ZIP files Hibi would refuse before inflating them', async (t) => {
+  const { path, ...metadata } = typing
+  const directory = scratch(t, [], { addons: false })
+  rmSync(join(directory, 'signatures/hibi-doom.json'))
+  const reject = async (zip, message) => {
+    writeFileSync(
+      join(directory, 'catalog.json'),
+      JSON.stringify([
+        {
+          ...metadata,
+          download: {
+            url: 'https://example.com/typing-speed.zip',
+            size: zip.length,
+            sha256: createHash('sha256').update(zip).digest('hex'),
+          },
+        },
+      ]),
+    )
+    await assert.rejects(
+      checkDirectory(directory, {
+        remote: true,
+        fetch: async () => new Response(zip),
+      }),
+      message,
+    )
+  }
+  const files = typingFiles.map(([name, bytes]) => [
+    `typing-speed/${name}`,
+    bytes,
+  ])
+  const huge = Array.from({ length: 13 }, (_, index) => [
+    `.cache/${index}.bin`,
+    Buffer.from('x'),
+    { declared: 5 * 1024 * 1024 },
+  ])
+  await reject(storedZip([...files, ...huge]), /more than 64 MiB/)
+  await reject(
+    storedZip([
+      ...files,
+      ['typing-speed/link.js', Buffer.from('/etc/passwd'), { mode: 0o120777 }],
+    ]),
+    /link, special, encrypted, or invalid/,
+  )
+  await reject(
+    storedZip([...files, ['../escape.js', Buffer.from('')]]),
+    /not a valid path/,
+  )
+  await reject(
+    storedZip([
+      ...files,
+      ['typing-speed/a.js', Buffer.from('')],
+      ['typing-speed/A.js', Buffer.from('')],
+    ]),
+    /conflicts with another entry/,
   )
 })
