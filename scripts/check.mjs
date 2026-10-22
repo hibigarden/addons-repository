@@ -37,9 +37,10 @@ const ALLOWED_FILES = new Set(
     ' ',
   ),
 )
-// Limits and formats match Hibi's directory parser and package inventory
-// (src/shared/addon-directory.ts and src/shared/addon-package.ts), so an entry
-// that passes here cannot make Hibi reject the whole directory.
+// Limits and formats meet both Hibi's directory parser and its manifest and
+// package rules (src/shared/addon-directory.ts, addon-manifest.ts, and
+// addon-package.ts), so an entry that passes here cannot make Hibi reject the
+// directory or the package.
 const MAX_CATALOG_BYTES = 1024 * 1024
 const MAX_ENTRIES = 500
 const MAX_ADDON_BYTES = 25 * 1024 * 1024
@@ -86,14 +87,14 @@ const author = (value) =>
   typeof value === 'object' &&
   !Array.isArray(value) &&
   Object.keys(value).every((key) => AUTHOR_KEYS.includes(key)) &&
-  text(value.displayName, 128) &&
+  text(value.displayName, 100) &&
   (value.github === undefined ||
     (typeof value.github === 'string' &&
       /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(value.github))) &&
   (value.discordId === undefined ||
     (typeof value.discordId === 'string' &&
-      /^\d{1,24}$/.test(value.discordId))) &&
-  (value.role === undefined || text(value.role, 128))
+      /^\d{5,24}$/.test(value.discordId))) &&
+  (value.role === undefined || text(value.role, 100))
 const hidden = (name) =>
   name.startsWith('.') ||
   ['node_modules', '__macosx'].includes(name.toLowerCase())
@@ -120,9 +121,9 @@ function checkEntry(entry, index) {
       throw new Error(`${label} has an unknown field: ${key}.`)
   if (!ID.test(entry.id ?? '')) throw new Error(`${label} needs a valid id.`)
   if (
-    !text(entry.name, 128) ||
-    !text(entry.description, 2048) ||
-    !text(entry.version, 64)
+    !text(entry.name, 100) ||
+    !text(entry.description, 500) ||
+    !text(entry.version, 40)
   )
     throw new Error(`${label} needs a name, description, and version.`)
   if (entry.apiVersion !== 1 && entry.apiVersion !== 2)
@@ -132,11 +133,11 @@ function checkEntry(entry, index) {
   if (
     !Array.isArray(entry.authors) ||
     !entry.authors.length ||
-    entry.authors.length > 32 ||
+    entry.authors.length > 20 ||
     !entry.authors.every(author)
   )
     throw new Error(
-      `${label} needs 1 to 32 authors with a display name and valid github, discordId, and role fields.`,
+      `${label} needs 1 to 20 authors with a display name and valid github, discordId, and role fields.`,
     )
   if (!text(entry.license, 128))
     throw new Error(`${label} needs an SPDX license expression.`)
@@ -272,10 +273,24 @@ function checkPackage(root, entry) {
     }
 }
 
-async function fetchBytes(url) {
-  const response = await fetch(url, { redirect: 'follow' })
+/** Reads at most `limit` bytes so a hostile link cannot exhaust CI. */
+async function fetchBytes(url, limit) {
+  const response = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(60_000),
+  })
   if (!response.ok) throw new Error(`${url} returned ${response.status}.`)
-  return Buffer.from(await response.arrayBuffer())
+  const chunks = []
+  let size = 0
+  for await (const chunk of response.body ?? []) {
+    size += chunk.length
+    if (size > limit) {
+      await response.body.cancel()
+      throw new Error(`${url} is larger than ${limit} bytes.`)
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
 }
 
 async function checkRemote(entry) {
@@ -288,11 +303,13 @@ async function checkRemote(entry) {
     sameMetadata(
       entry.id,
       entry,
-      JSON.parse((await fetchBytes(raw)).toString('utf8')),
+      JSON.parse(
+        (await fetchBytes(raw, MAX_ADDON_MANIFEST_BYTES)).toString('utf8'),
+      ),
     )
   }
   if (entry.download) {
-    const bytes = await fetchBytes(entry.download.url)
+    const bytes = await fetchBytes(entry.download.url, entry.download.size)
     if (bytes.length !== entry.download.size)
       throw new Error(
         `${entry.id}: the download is ${bytes.length} bytes, not ${entry.download.size}.`,

@@ -118,11 +118,15 @@ test('entries Hibi would refuse fail here too', async (t) => {
       /optional folder path/,
     ],
     [{ ...doom, authors: [{ displayName: 'A', discordId: 1 }] }, /authors/],
+    [
+      { ...doom, authors: [{ displayName: 'A', discordId: '1234' }] },
+      /authors/,
+    ],
     [{ ...doom, authors: [{ displayName: 'A', github: '-a' }] }, /authors/],
     [{ ...doom, authors: [{ displayName: 'A', email: 'a@b.c' }] }, /authors/],
     [
-      { ...doom, authors: Array(33).fill({ displayName: 'A' }) },
-      /1 to 32 authors/,
+      { ...doom, authors: Array(21).fill({ displayName: 'A' }) },
+      /1 to 20 authors/,
     ],
   ]
   for (const [entry, message] of refused)
