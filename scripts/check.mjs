@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// Validates catalog.json and the packages in addons/. With --remote, it also
-// compares linked repositories and downloads with their catalog entries.
+// Validates catalog.json, the packages in addons/, and the Hibi signature in
+// signatures/ for every entry. With --remote, it also reads each linked
+// repository folder and download and checks its files against the signature.
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { createHash, createPublicKey, verify } from 'node:crypto'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { extname, join, relative, resolve, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { crc32, inflateRawSync } from 'node:zlib'
 
 const KEYS = new Set([
   'id',
@@ -53,6 +55,13 @@ const SHA256 = /^[0-9a-f]{64}$/
 const GITHUB_REPOSITORY =
   /^https:\/\/github\.com\/[A-Za-z\d_.-]+\/[A-Za-z\d_.-]+\/?$/
 const AUTHOR_KEYS = ['displayName', 'github', 'discordId', 'role']
+// Public Hibi signing keys, copied from ADDON_TRUST_KEYS in Hibi's
+// src/shared/addon-trust.ts. Only public keys belong here.
+const TRUST_KEYS = {
+  '1b43eadedb48d51d': 'JZEDarSlRAFAdC9WC++vLgpLVWI8pi9yBG8Wm73/S1w=',
+}
+const SIGNATURE_FILE = 'hibi-addon.sig.json'
+const MAX_SIGNATURE_BYTES = 1024 * 1024
 
 const https = (value) => {
   if (typeof value !== 'string' || value.length > 8192) return false
@@ -197,10 +206,10 @@ function sameMetadata(label, entry, manifest) {
 }
 
 /** Applies the path and size rules Hibi enforces when it reads a package. */
-function checkLimits(label, folder, own) {
+function checkLimits(label, sizes) {
   const seen = new Map()
   let bytes = 0
-  for (const path of own) {
+  for (const [path, size] of sizes) {
     if (!validPath(path))
       throw new Error(`${label}: ${path} is not a valid path.`)
     const parts = path.split('/')
@@ -217,7 +226,6 @@ function checkLimits(label, folder, own) {
         )
       seen.set(key, prefix)
     }
-    const size = statSync(join(folder, path)).size
     bytes += size
     if (size > MAX_ADDON_FILE_BYTES)
       throw new Error(`${label}: ${path} is larger than 5 MiB.`)
@@ -232,13 +240,15 @@ function checkLimits(label, folder, own) {
     throw new Error(`${label}: the package is larger than 25 MiB.`)
 }
 
-function checkPackage(root, entry) {
-  const folder = join(root, entry.path)
-  const label = entry.path
-  if (!existsSync(join(folder, 'hibi-addon.json')))
-    throw new Error(`${label}: hibi-addon.json is missing.`)
-  const own = files(folder)
-  checkLimits(label, folder, own)
+/**
+ * Applies Hibi's package rules to `own` (paths relative to the package folder)
+ * and returns the SHA-256 of every file the signature covers.
+ */
+function checkFiles(label, entry, own, read, parse) {
+  checkLimits(
+    label,
+    own.map((path) => [path, read(path).length]),
+  )
   for (const path of own)
     if (!ALLOWED_FILES.has(extname(path).toLowerCase()))
       throw new Error(
@@ -248,35 +258,111 @@ function checkPackage(root, entry) {
     throw new Error(
       `${label}: a package folder holds exactly one hibi-addon.json.`,
     )
+  if (!own.includes('hibi-addon.json'))
+    throw new Error(`${label}: hibi-addon.json is missing.`)
   if (!own.includes('README.md')) throw new Error(`${label}: add a README.md.`)
   if (!own.some((path) => /^licen[cs]e\.(txt|md)$/i.test(path)))
     throw new Error(`${label}: add LICENSE.txt or LICENSE.md.`)
-  const manifest = JSON.parse(
-    readFileSync(join(folder, 'hibi-addon.json'), 'utf8'),
-  )
+  const manifest = JSON.parse(read('hibi-addon.json').toString('utf8'))
   sameMetadata(label, entry, manifest)
   if (manifest.kind === 'extension') {
     if (!/\.m?js$/.test(manifest.entry ?? '') || !own.includes(manifest.entry))
       throw new Error(
         `${label}: "entry" must name a committed .js or .mjs file.`,
       )
-    for (const path of own.filter((path) => /\.m?js$/.test(path)))
-      execFileSync(process.execPath, ['--check', join(folder, path)], {
-        stdio: 'pipe',
-      })
+    for (const path of own.filter((path) => /\.m?js$/.test(path))) parse?.(path)
   }
   for (const theme of manifest.themes ?? [])
     if (typeof theme === 'string') {
       if (!own.includes(theme))
         throw new Error(`${label}: ${theme} is missing.`)
-      JSON.parse(readFileSync(join(folder, theme), 'utf8'))
+      JSON.parse(read(theme).toString('utf8'))
     }
+  return Object.fromEntries(
+    own
+      .filter((path) => path !== SIGNATURE_FILE)
+      .map((path) => [
+        path,
+        createHash('sha256').update(read(path)).digest('hex'),
+      ]),
+  )
+}
+
+function checkPackage(root, entry) {
+  const folder = join(root, entry.path)
+  if (!existsSync(join(folder, 'hibi-addon.json')))
+    throw new Error(`${entry.path}: hibi-addon.json is missing.`)
+  return checkFiles(
+    entry.path,
+    entry,
+    files(folder),
+    (path) => readFileSync(join(folder, path)),
+    (path) =>
+      execFileSync(process.execPath, ['--check', join(folder, path)], {
+        stdio: 'pipe',
+      }),
+  )
+}
+
+const canonical = (value) => {
+  if (typeof value !== 'string' || !value) return null
+  const bytes = Buffer.from(value, 'base64')
+  return bytes.toString('base64') === value ? bytes : null
+}
+
+/** Verifies an envelope the way Hibi does and returns its signed file hashes. */
+function signedFiles(label, envelope, entry) {
+  const raw =
+    typeof envelope?.keyId === 'string' &&
+    Object.hasOwn(TRUST_KEYS, envelope.keyId)
+      ? canonical(TRUST_KEYS[envelope.keyId])
+      : null
+  if (!raw || raw.length !== 32)
+    throw new Error(`${label} is not signed with a Hibi key.`)
+  const bytes = canonical(envelope.statement)
+  const signature = canonical(envelope.signature)
+  const key = createPublicKey({
+    format: 'jwk',
+    key: { kty: 'OKP', crv: 'Ed25519', x: raw.toString('base64url') },
+  })
+  if (
+    !bytes ||
+    signature?.length !== 64 ||
+    !verify(null, bytes, key, signature)
+  )
+    throw new Error(`${label} has an invalid signature.`)
+  const statement = JSON.parse(bytes.toString('utf8'))
+  if (
+    statement?.type !== 'hibi-addon-signature' ||
+    statement.version !== 1 ||
+    statement.id !== entry.id ||
+    statement.addonVersion !== entry.version ||
+    typeof statement.signedAt !== 'string' ||
+    !Number.isFinite(Date.parse(statement.signedAt)) ||
+    !statement.files ||
+    typeof statement.files !== 'object' ||
+    Array.isArray(statement.files)
+  )
+    throw new Error(`${label} does not sign ${entry.id} ${entry.version}.`)
+  return statement.files
+}
+
+function sameFiles(label, signed, hashes) {
+  const paths = Object.keys(hashes)
+  if (
+    Object.keys(signed).length !== paths.length ||
+    paths.some(
+      (path) => !Object.hasOwn(signed, path) || signed[path] !== hashes[path],
+    )
+  )
+    throw new Error(`${label}: the files do not match the signature.`)
 }
 
 /** Reads at most `limit` bytes so a hostile link cannot exhaust CI. */
-async function fetchBytes(url, limit) {
-  const response = await fetch(url, {
+async function fetchBytes(url, limit, { fetch: get = fetch, headers } = {}) {
+  const response = await get(url, {
     redirect: 'follow',
+    headers,
     signal: AbortSignal.timeout(60_000),
   })
   if (!response.ok) throw new Error(`${url} returned ${response.status}.`)
@@ -293,36 +379,141 @@ async function fetchBytes(url, limit) {
   return Buffer.concat(chunks)
 }
 
-async function checkRemote(entry) {
-  if (entry.repository) {
-    const { url, commit, path } = entry.repository
-    const match = new URL(url).pathname.match(
-      /^\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
-    )
-    const raw = `https://raw.githubusercontent.com/${match[1]}/${match[2]}/${commit}/${path ? `${path}/` : ''}hibi-addon.json`
-    sameMetadata(
-      entry.id,
-      entry,
-      JSON.parse(
-        (await fetchBytes(raw, MAX_ADDON_MANIFEST_BYTES)).toString('utf8'),
-      ),
-    )
-  }
-  if (entry.download) {
-    const bytes = await fetchBytes(entry.download.url, entry.download.size)
-    if (bytes.length !== entry.download.size)
-      throw new Error(
-        `${entry.id}: the download is ${bytes.length} bytes, not ${entry.download.size}.`,
+const gitBlob = (bytes) =>
+  createHash('sha1')
+    .update(`blob ${bytes.length}\0`)
+    .update(bytes)
+    .digest('hex')
+
+/** Reads a pinned GitHub folder file by file; each file must match the commit's tree. */
+async function repositoryFiles(entry, options) {
+  const { url, commit, path } = entry.repository
+  const [, owner, name] = new URL(url).pathname.match(
+    /^\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
+  )
+  const token = process.env.GITHUB_TOKEN
+  const tree = JSON.parse(
+    (
+      await fetchBytes(
+        `https://api.github.com/repos/${owner}/${name}/git/trees/${commit}?recursive=1`,
+        16 * 1024 * 1024,
+        {
+          ...options,
+          headers: {
+            accept: 'application/vnd.github+json',
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
+        },
       )
-    if (
-      createHash('sha256').update(bytes).digest('hex') !== entry.download.sha256
+    ).toString('utf8'),
+  )
+  if (tree.truncated || !Array.isArray(tree.tree))
+    throw new Error(`${entry.id}: GitHub returned an incomplete file list.`)
+  const prefix = path ? `${path}/` : ''
+  const files = new Map()
+  let bytes = 0
+  for (const item of tree.tree) {
+    if (!item.path.startsWith(prefix)) continue
+    const relative = item.path.slice(prefix.length)
+    if (relative.split('/').some(hidden) || item.type === 'tree') continue
+    if (item.type !== 'blob' || item.mode === '120000')
+      throw new Error(`${entry.id}: ${relative} is a link or submodule.`)
+    bytes += item.size
+    if (item.size > MAX_ADDON_FILE_BYTES || bytes > MAX_ADDON_BYTES)
+      throw new Error(`${entry.id}: the package exceeds Hibi's size limits.`)
+    const content = await fetchBytes(
+      `https://raw.githubusercontent.com/${owner}/${name}/${commit}/${item.path
+        .split('/')
+        .map(encodeURIComponent)
+        .join('/')}`,
+      item.size,
+      options,
     )
-      throw new Error(`${entry.id}: the download does not match its sha256.`)
+    if (gitBlob(content) !== item.sha)
+      throw new Error(`${entry.id}: ${relative} does not match ${commit}.`)
+    files.set(relative, content)
   }
+  return files
 }
 
-/** Returns the catalog after checking it and every nested package. */
-export async function checkDirectory(root, { remote = false } = {}) {
+/** Reads a ZIP's stored and deflated files with the same limits as Hibi. */
+function zipFiles(label, zip) {
+  let end = -1
+  for (let at = zip.length - 22; at >= Math.max(0, zip.length - 65557); at--)
+    if (zip.readUInt32LE(at) === 0x06054b50) {
+      end = at
+      break
+    }
+  if (end < 0) throw new Error(`${label}: the download is not a ZIP file.`)
+  const count = zip.readUInt16LE(end + 10)
+  let at = zip.readUInt32LE(end + 16)
+  if (count > 5000) throw new Error(`${label}: the ZIP has too many entries.`)
+  const files = new Map()
+  for (let index = 0; index < count; index++) {
+    if (zip.readUInt32LE(at) !== 0x02014b50)
+      throw new Error(`${label}: the ZIP directory is invalid.`)
+    const flags = zip.readUInt16LE(at + 8)
+    const method = zip.readUInt16LE(at + 10)
+    const crc = zip.readUInt32LE(at + 16)
+    const compressed = zip.readUInt32LE(at + 20)
+    const length = zip.readUInt32LE(at + 24)
+    const nameLength = zip.readUInt16LE(at + 28)
+    const offset = zip.readUInt32LE(at + 42)
+    const name = zip.subarray(at + 46, at + 46 + nameLength).toString('utf8')
+    at +=
+      46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32)
+    if (name.endsWith('/')) continue
+    if (flags & 1 || ![0, 8].includes(method) || length > MAX_ADDON_FILE_BYTES)
+      throw new Error(`${label}: ${name} cannot be read.`)
+    if (zip.readUInt32LE(offset) !== 0x04034b50)
+      throw new Error(`${label}: the ZIP directory is invalid.`)
+    const start =
+      offset +
+      30 +
+      zip.readUInt16LE(offset + 26) +
+      zip.readUInt16LE(offset + 28)
+    const data = zip.subarray(start, start + compressed)
+    const content =
+      method === 0
+        ? data
+        : inflateRawSync(data, { maxOutputLength: MAX_ADDON_FILE_BYTES })
+    if (content.length !== length || crc32(content) !== crc)
+      throw new Error(`${label}: ${name} is damaged.`)
+    if (files.has(name)) throw new Error(`${label}: ${name} appears twice.`)
+    files.set(name, content)
+  }
+  return files
+}
+
+async function downloadFiles(entry, options) {
+  const zip = await fetchBytes(entry.download.url, entry.download.size, options)
+  if (zip.length !== entry.download.size)
+    throw new Error(
+      `${entry.id}: the download is ${zip.length} bytes, not ${entry.download.size}.`,
+    )
+  if (createHash('sha256').update(zip).digest('hex') !== entry.download.sha256)
+    throw new Error(`${entry.id}: the download does not match its sha256.`)
+  const all = [...zipFiles(entry.id, zip)].filter(
+    ([path]) => !path.split('/').some(hidden),
+  )
+  const manifests = all.filter(
+    ([path]) => path.split('/').at(-1) === 'hibi-addon.json',
+  )
+  if (manifests.length !== 1)
+    throw new Error(`${entry.id}: the download must hold one hibi-addon.json.`)
+  const prefix = manifests[0][0].slice(0, -'hibi-addon.json'.length)
+  return new Map(
+    all
+      .filter(([path]) => path.startsWith(prefix))
+      .map(([path, content]) => [path.slice(prefix.length), content]),
+  )
+}
+
+/** Returns the catalog after checking it, every nested package, and every signature. */
+export async function checkDirectory(
+  root,
+  { remote = false, fetch: get } = {},
+) {
   const source = readFileSync(join(root, 'catalog.json'))
   if (source.length > MAX_CATALOG_BYTES)
     throw new Error('catalog.json must be 1 MiB or smaller.')
@@ -345,8 +536,42 @@ export async function checkDirectory(root, { remote = false } = {}) {
   for (const folder of folders)
     if (!listed.has(folder))
       throw new Error(`${folder} is not listed in catalog.json.`)
-  for (const entry of catalog) if (entry.path) checkPackage(root, entry)
-  if (remote) for (const entry of catalog) await checkRemote(entry)
+  const signatures = existsSync(join(root, 'signatures'))
+    ? readdirSync(join(root, 'signatures')).filter((name) => !hidden(name))
+    : []
+  for (const name of signatures)
+    if (!ids.some((id) => name === `${id}.json`))
+      throw new Error(`signatures/${name} does not belong to a catalog entry.`)
+  const signed = new Map()
+  for (const entry of catalog) {
+    const hashes = entry.path && checkPackage(root, entry)
+    const file = `signatures/${entry.id}.json`
+    if (!signatures.includes(`${entry.id}.json`))
+      throw new Error(`${entry.id} needs a Hibi signature in ${file}.`)
+    const bytes = readFileSync(join(root, file))
+    if (bytes.length > MAX_SIGNATURE_BYTES)
+      throw new Error(`${file} is larger than 1 MiB.`)
+    signed.set(entry.id, signedFiles(file, JSON.parse(bytes), entry))
+    if (!entry.path) continue
+    sameFiles(entry.path, signed.get(entry.id), hashes)
+    const own = join(root, entry.path, SIGNATURE_FILE)
+    if (existsSync(own) && !readFileSync(own).equals(bytes))
+      throw new Error(`${entry.path}/${SIGNATURE_FILE} must match ${file}.`)
+  }
+  if (remote)
+    for (const entry of catalog) {
+      if (entry.path) continue
+      const files = entry.repository
+        ? await repositoryFiles(entry, { fetch: get })
+        : await downloadFiles(entry, { fetch: get })
+      sameFiles(
+        entry.id,
+        signed.get(entry.id),
+        checkFiles(entry.id, entry, [...files.keys()], (path) =>
+          files.get(path),
+        ),
+      )
+    }
   return catalog
 }
 
