@@ -56,6 +56,21 @@ test('every entry needs a signature and every signature an entry', async (t) => 
   await assert.rejects(checkDirectory(stale), /does not belong/)
 })
 
+test('signatures can be as large as any package file', async (t) => {
+  const limit = 5 * 1024 * 1024
+  const sized = scratch(t, [doom, typing])
+  const value = JSON.stringify(envelope(sized, 'hibi-doom'))
+  const pad = (size) =>
+    writeFileSync(
+      join(sized, 'signatures/hibi-doom.json'),
+      value.padEnd(size, ' '),
+    )
+  pad(limit)
+  await checkDirectory(sized)
+  pad(limit + 1)
+  await assert.rejects(checkDirectory(sized), /larger than 5 MiB/)
+})
+
 test('signatures must come from a Hibi key and cover the listed version', async (t) => {
   const forged = scratch(t, [doom, typing])
   const value = envelope(forged, 'hibi-doom')

@@ -61,7 +61,6 @@ const TRUST_KEYS = {
   '1b43eadedb48d51d': 'JZEDarSlRAFAdC9WC++vLgpLVWI8pi9yBG8Wm73/S1w=',
 }
 const SIGNATURE_FILE = 'hibi-addon.sig.json'
-const MAX_SIGNATURE_BYTES = 1024 * 1024
 
 const https = (value) => {
   if (typeof value !== 'string' || value.length > 8192) return false
@@ -549,8 +548,9 @@ export async function checkDirectory(
     if (!signatures.includes(`${entry.id}.json`))
       throw new Error(`${entry.id} needs a Hibi signature in ${file}.`)
     const bytes = readFileSync(join(root, file))
-    if (bytes.length > MAX_SIGNATURE_BYTES)
-      throw new Error(`${file} is larger than 1 MiB.`)
+    // Hibi reads a signature like any package file, up to 5 MiB.
+    if (bytes.length > MAX_ADDON_FILE_BYTES)
+      throw new Error(`${file} is larger than 5 MiB.`)
     signed.set(entry.id, signedFiles(file, JSON.parse(bytes), entry))
     if (!entry.path) continue
     sameFiles(entry.path, signed.get(entry.id), hashes)
