@@ -82,10 +82,13 @@ jobs:
         run: |
           git apply --index signatures.patch
           rm signatures.patch
-          if git diff --cached --name-only | grep -Ev '^(signatures/[a-z][a-z0-9-]*\.json|addons/[a-z][a-z0-9-]*/hibi-addon\.sig\.json)$'; then
-            echo "The signing job changed files other than signatures." >&2
+          # Only added or modified regular files at signature paths may change.
+          git diff --cached --raw --no-renames --abbrev=40 > changes.txt
+          if [ ! -s changes.txt ] || grep -Pv '^:(100644 100644 [0-9a-f]{40} [0-9a-f]{40} M|000000 100644 0{40} [0-9a-f]{40} A)\t(signatures/[a-z][a-z0-9-]*\.json|addons/[a-z][a-z0-9-]*/hibi-addon\.sig\.json)$' changes.txt; then
+            echo "The signing job may only add or update signature files." >&2
             exit 1
           fi
+          rm changes.txt
           npm run check
           git -c user.name=schmayterling -c user.email=ryana@ryanaque.com \
             commit -m "chore(signatures): sign ${SIGNED}"

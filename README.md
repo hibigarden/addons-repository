@@ -33,7 +33,7 @@ npm test
 
 Maintainers review each pull request: the package source, its manifest, and the access it asks for. Merging a pull request accepts the entry. The [sign workflow](.github/workflows/sign.yml) then signs every entry whose signature is missing or no longer matches its files, checks the whole directory strictly, and commits the new signatures to `main`. Entries with a valid signature are left unchanged.
 
-The workflow signs with the directory's own key, which Hibi trusts for addon packages. That private key exists only as a secret of the `addon-signing` environment, which runs only on `main`. The job that holds it can read the repository but not change it; a separate job without the key commits only files in `signatures/` and `hibi-addon.sig.json`. Pull requests, including those from forks, never receive the key. Nothing from a listed package runs at any step. Hibi's offline root key is never used in CI.
+The workflow signs with the directory's own key, which Hibi trusts for addon packages. That private key exists only as a secret of the `addon-signing` environment, which runs only on `main`. The job that holds it can read the repository but not change it; a separate job without the key commits only files in `signatures/` and `hibi-addon.sig.json`. Pull requests, including those from forks, never receive the key. Nothing from a listed package runs at any step. The directory workflow never receives or uses Hibi's offline root private key.
 
 To sign one entry again even though its signature is valid, run the sign workflow on `main` from the Actions tab and enter its id.
 
