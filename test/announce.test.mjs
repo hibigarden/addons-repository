@@ -15,6 +15,7 @@ import test from 'node:test'
 import {
   announcementBase,
   announcementPayloads,
+  checkpointCommit,
   classifyChanges,
   prepareAnnouncements,
   readSnapshot,
@@ -24,6 +25,7 @@ import { checkDirectory } from '../scripts/check.mjs'
 import { signDirectory, signingKey } from '../scripts/sign.mjs'
 
 const SHA = 'a'.repeat(40)
+const CHECKPOINT = 'refs/remotes/origin/addon-announcements-state'
 const ROLE = '1550310045068296262'
 const WEBHOOK = 'https://discord.com/api/webhooks/123/fake-test-token'
 const entry = (id = 'hello', extra = {}) => ({
@@ -335,6 +337,17 @@ test('workflow gates require publication and all-batch delivery before checkpoin
       }),
       false,
     )
+  // Deferred entries travel from prepare to the checkpoint only through env.
+  assert.ok(
+    workflow.includes('deferred: ${{ steps.prepare.outputs.deferred }}'),
+  )
+  const record = workflow.split('- name: Record delivered snapshot\n')[1]
+  assert.ok(record.includes('DEFERRED: ${{ needs.notify.outputs.deferred }}'))
+  assert.match(
+    record,
+    /\n {10}git push origin "\$state:refs\/heads\/addon-announcements-state"\n?$/,
+  )
+  assert.doesNotMatch(record, /--force|\+\$state|secrets\./)
 })
 
 function fixture(t) {
@@ -583,9 +596,11 @@ test('one failing addon is skipped while the rest are signed, checked and announ
   await checkDirectory(f.root, { keys: f.keys, skip: ['broken'] })
   f.commit()
   const notAnnounced = []
+  const deferred = {}
   const payloads = await prepareAnnouncements(f.root, base, {
     keys: f.keys,
     skipped: notAnnounced,
+    deferred,
   })
   assert.equal(payloads.length, 1)
   assert.match(payloads[0].embeds[0].description, /\*\*added\*\* \[hello\]/)
@@ -594,6 +609,226 @@ test('one failing addon is skipped while the rest are signed, checked and announ
     notAnnounced.map(({ id }) => id),
     ['broken'],
   )
+  // Its unsigned listing is announced by the run that signs it.
+  assert.deepEqual(deferred, {})
+})
+
+// One notify run: prepare from the checkpoint, then record what was delivered
+// the way the checkpoint job does, checking that the ref only fast-forwards.
+async function announceRun(f) {
+  const skipped = []
+  const deferred = {}
+  const payloads = await prepareAnnouncements(f.root, undefined, {
+    keys: f.keys,
+    skipped,
+    deferred,
+  })
+  const text = payloads.map((p) => p.embeds[0].description).join('\n')
+  const deliver = () => {
+    const previous = f.git('rev-parse', CHECKPOINT)
+    const state = checkpointCommit(f.root, deferred)
+    f.git('merge-base', '--is-ancestor', previous, state)
+    f.git('update-ref', CHECKPOINT, state)
+    assert.equal(announcementBase(f.root), f.git('rev-parse', 'HEAD'))
+  }
+  return { text, skipped: skipped.map(({ id }) => id), deferred, deliver }
+}
+
+// A published package that fails only while announcing, as if its source
+// could not be fetched right after signing.
+function breakPackage(f, id) {
+  const file = join(f.root, 'addons', id, 'index.js')
+  const bytes = readFileSync(file)
+  writeFileSync(file, 'export const unreachable = true\n')
+  return () => writeFileSync(file, bytes)
+}
+
+const count = (text, pattern) => text.split(pattern).length - 1
+
+test('a new signature that fails while announcing is announced once on a later run', async (t) => {
+  const f = fixture(t)
+  f.writeCatalog([entry()])
+  f.packageFiles(entry())
+  await f.sign()
+  const delivered = f.commit()
+  f.git('update-ref', CHECKPOINT, delivered)
+  f.packageFiles(entry('hello', { version: '2.0.0' }))
+  f.packageFiles(entry('two'))
+  f.writeCatalog([entry('hello', { version: '2.0.0' }), entry('two')])
+  await f.sign()
+  f.commit()
+  const restore = breakPackage(f, 'two')
+  const first = await announceRun(f)
+  assert.equal(count(first.text, '**updated** [hello]'), 1)
+  assert.doesNotMatch(first.text, /\[two\]/)
+  assert.deepEqual(first.skipped, ['two'])
+  assert.deepEqual(first.deferred, { two: delivered })
+  first.deliver()
+  restore()
+  writeFileSync(join(f.root, 'README.md'), 'unrelated push\n')
+  f.commit()
+  const second = await announceRun(f)
+  assert.equal(count(second.text, '**added** [two]'), 1)
+  assert.doesNotMatch(second.text, /hello/)
+  assert.deepEqual(second.skipped, [])
+  assert.deepEqual(second.deferred, {})
+  second.deliver()
+  assert.equal((await announceRun(f)).text, '')
+})
+
+test('a deferred entry that keeps failing stays deferred and announces its latest signature once', async (t) => {
+  const f = fixture(t)
+  f.writeCatalog([entry()])
+  f.packageFiles(entry())
+  await f.sign()
+  const delivered = f.commit()
+  f.git('update-ref', CHECKPOINT, delivered)
+  const listing = (...items) => {
+    for (const item of items) f.packageFiles(item)
+    f.writeCatalog(items)
+  }
+  listing(entry('hello', { version: '2.0.0' }), entry('two'))
+  await f.sign()
+  f.commit()
+  let restore = breakPackage(f, 'hello')
+  const first = await announceRun(f)
+  assert.match(first.text, /\*\*added\*\* \[two\]/)
+  assert.doesNotMatch(first.text, /hello/)
+  assert.deepEqual(first.deferred, { hello: delivered })
+  first.deliver()
+  // Fails again: reported again, keeps comparing with the last announcement.
+  listing(entry('hello', { version: '2.0.0' }), entry('two'), entry('three'))
+  await f.sign()
+  f.commit()
+  restore()
+  restore = breakPackage(f, 'hello')
+  const second = await announceRun(f)
+  assert.match(second.text, /\*\*added\*\* \[three\]/)
+  assert.doesNotMatch(second.text, /hello|\[two\]/)
+  assert.deepEqual(second.skipped, ['hello'])
+  assert.deepEqual(second.deferred, { hello: delivered })
+  second.deliver()
+  // Signed again while still failing, then valid: one row, latest version.
+  restore()
+  const three = [entry('two'), entry('three')]
+  listing(entry('hello', { version: '3.0.0' }), ...three)
+  await f.sign()
+  f.commit()
+  restore = breakPackage(f, 'hello')
+  const third = await announceRun(f)
+  assert.equal(third.text, '')
+  assert.deepEqual(third.deferred, { hello: delivered })
+  restore()
+  const fourth = await announceRun(f)
+  assert.equal(count(fourth.text, '[hello]'), 1)
+  assert.match(fourth.text, /\*\*updated\*\* \[hello\]/)
+  assert.ok(fourth.text.includes('**1.0.0 → 3.0.0**'))
+  assert.ok(fourth.text.includes(`compare/${delivered}...`))
+  assert.doesNotMatch(fourth.text, /\[two\]|\[three\]/)
+  assert.deepEqual(fourth.deferred, {})
+  fourth.deliver()
+  assert.equal((await announceRun(f)).text, '')
+})
+
+test('a deferred entry removed from the catalog is dropped', async (t) => {
+  const f = fixture(t)
+  f.writeCatalog([entry()])
+  f.packageFiles(entry())
+  await f.sign()
+  const delivered = f.commit()
+  f.git('update-ref', CHECKPOINT, delivered)
+  f.packageFiles(entry('two'))
+  f.packageFiles(entry('three'))
+  f.writeCatalog([entry(), entry('two'), entry('three')])
+  await f.sign()
+  f.commit()
+  const restore = breakPackage(f, 'two')
+  const first = await announceRun(f)
+  assert.deepEqual(first.deferred, { two: delivered })
+  first.deliver()
+  restore()
+  rmSync(join(f.root, 'addons/two'), { recursive: true })
+  rmSync(join(f.root, 'signatures/two.json'))
+  f.writeCatalog([entry(), entry('three')])
+  f.commit()
+  const second = await announceRun(f)
+  assert.equal(second.text, '')
+  assert.deepEqual(second.skipped, [])
+  assert.deepEqual(second.deferred, {})
+})
+
+test('without a checkpoint, a failing new signature is deferred from the bootstrap snapshot', async (t) => {
+  const f = fixture(t)
+  f.writeCatalog([entry()])
+  f.packageFiles(entry())
+  await f.sign()
+  const bootstrap = f.commit()
+  mkdirSync(join(f.root, 'scripts'))
+  writeFileSync(join(f.root, 'scripts/announce.mjs'), '// notifier fixture\n')
+  f.commit()
+  f.packageFiles(entry('two'))
+  f.packageFiles(entry('three'))
+  f.writeCatalog([entry(), entry('two'), entry('three')])
+  await f.sign()
+  const head = f.commit()
+  const restore = breakPackage(f, 'two')
+  const skipped = []
+  const deferred = {}
+  const payloads = await prepareAnnouncements(f.root, undefined, {
+    keys: f.keys,
+    skipped,
+    deferred,
+  })
+  assert.match(payloads[0].embeds[0].description, /\[three\]/)
+  assert.doesNotMatch(payloads[0].embeds[0].description, /\[two\]/)
+  assert.deepEqual(deferred, { two: bootstrap })
+  const state = checkpointCommit(f.root, deferred)
+  assert.equal(f.git('rev-parse', `${state}^@`), head)
+  f.git('update-ref', CHECKPOINT, state)
+  restore()
+  const second = await announceRun(f)
+  assert.equal(count(second.text, '**added** [two]'), 1)
+  assert.doesNotMatch(second.text, /three/)
+})
+
+test('announcement state accepts only listed ids at commits in main history', async (t) => {
+  const f = fixture(t)
+  f.writeCatalog([entry()])
+  f.packageFiles(entry())
+  await f.sign()
+  const head = f.commit()
+  const unrelated = f.git(
+    'commit-tree',
+    f.git('rev-parse', 'HEAD^{tree}'),
+    '-m',
+    'test: unrelated',
+  )
+  for (const deferred of [
+    { '../hello': head },
+    { hello: 'HEAD' },
+    { hello: unrelated },
+    [],
+    null,
+  ])
+    assert.throws(
+      () => checkpointCommit(f.root, deferred),
+      /invalid announcement state/,
+    )
+  f.git('update-ref', CHECKPOINT, head)
+  const state = checkpointCommit(f.root, { hello: head })
+  f.git('update-ref', CHECKPOINT, state)
+  assert.equal(announcementBase(f.root), head)
+  const tree = f.git('rev-parse', `${state}^{tree}`)
+  const forged = f.git(
+    'commit-tree',
+    tree,
+    '-p',
+    unrelated,
+    '-m',
+    'test: forged',
+  )
+  f.git('update-ref', CHECKPOINT, forged)
+  assert.throws(() => announcementBase(f.root), /not an ancestor/)
 })
 
 test('missing secret skips with notice; empty payloads make no requests', async (t) => {
