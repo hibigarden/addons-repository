@@ -2,8 +2,8 @@
   "id": "one-dark-pro",
   "name": "one dark pro",
   "description": "atom-inspired dark colors with one dark pro syntax highlighting.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "theme",
   "authors": [
     {

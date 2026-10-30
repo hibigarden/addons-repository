@@ -147,8 +147,6 @@ function checkEntry(entry, index) {
     !text(entry.version, 40)
   )
     throw new Error(`${label} needs a name, description, and version.`)
-  if (entry.apiVersion !== 1 && entry.apiVersion !== 2)
-    throw new Error(`${label} needs an apiVersion of 1 or 2.`)
   if (!['extension', 'theme'].includes(entry.kind))
     throw new Error(`${label} needs a kind of "extension" or "theme".`)
   if (
@@ -169,6 +167,13 @@ function checkEntry(entry, index) {
     throw new Error(
       `${label} needs exactly one of path, repository, or download.`,
     )
+  // Hibi loads only API 3. Linked packages pinned before the move keep
+  // their API 2 entry until the author publishes an API 3 version.
+  if (
+    entry.apiVersion !== 3 &&
+    !(entry.apiVersion === 2 && entry.path === undefined)
+  )
+    throw new Error(`${label} needs an apiVersion of 3.`)
   if (entry.path !== undefined && entry.path !== `addons/${entry.id}`)
     throw new Error(`${label} must use the path addons/${entry.id}.`)
   const { repository, download } = entry

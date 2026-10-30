@@ -2,8 +2,8 @@
   "id": "fnaf-jumpscare",
   "name": "fnaf jumpscare",
   "description": "a random fredbear jumpscare with sound and flashing static.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "extension",
   "authors": [
     {

@@ -2,8 +2,8 @@
   "id": "github-theme",
   "name": "github theme",
   "description": "github's default light and dark editor palettes.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "theme",
   "authors": [
     {

@@ -2,8 +2,8 @@
   "id": "fatass-horse",
   "name": "fatass horse",
   "description": "a horse that follows your mouse cursor and fades when nearby.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "extension",
   "authors": [
     {
