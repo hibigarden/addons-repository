@@ -2,8 +2,8 @@
   "id": "everforest-light",
   "name": "everforest light",
   "description": "soft, medium, and hard pastel light palettes with sage-green accents.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "theme",
   "authors": [
     {

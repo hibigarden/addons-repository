@@ -3,8 +3,8 @@
     "id": "dracula",
     "name": "dracula",
     "description": "the classic purple-accented dracula dark palette.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "theme",
     "authors": [
       {
@@ -20,8 +20,8 @@
     "id": "everforest-light",
     "name": "everforest light",
     "description": "soft, medium, and hard pastel light palettes with sage-green accents.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "theme",
     "authors": [
       {
@@ -37,8 +37,8 @@
     "id": "fatass-horse",
     "name": "fatass horse",
     "description": "a horse that follows your mouse cursor and fades when nearby.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "extension",
     "authors": [
       {
@@ -53,8 +53,8 @@
     "id": "fnaf-jumpscare",
     "name": "fnaf jumpscare",
     "description": "a random fredbear jumpscare with sound and flashing static.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "extension",
     "authors": [
       {
@@ -70,8 +70,8 @@
     "id": "github-theme",
     "name": "github theme",
     "description": "github's default light and dark editor palettes.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "theme",
     "authors": [
       {
@@ -103,8 +103,8 @@
     "id": "one-dark-pro",
     "name": "one dark pro",
     "description": "atom-inspired dark colors with one dark pro syntax highlighting.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "theme",
     "authors": [
       {
@@ -120,8 +120,8 @@
     "id": "oneko",
     "name": "oneko",
     "description": "a pixel cat that follows your mouse cursor.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "extension",
     "authors": [
       {
@@ -136,8 +136,8 @@
     "id": "rose-pine-dawn",
     "name": "rosé pine dawn",
     "description": "a pastel light palette with warm paper, rose, and lilac colors.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "theme",
     "authors": [
       {
@@ -153,8 +153,8 @@
     "id": "tokyo-night",
     "name": "tokyo night",
     "description": "tokyo night, storm, and light editor palettes.",
-    "version": "1.0.0",
-    "apiVersion": 2,
+    "version": "1.0.1",
+    "apiVersion": 3,
     "kind": "theme",
     "authors": [
       {
@@ -170,8 +170,8 @@
     "id": "typing-speed",
     "name": "Typing speed",
     "description": "See your estimated words and characters per minute as you type.",
-    "version": "1.1.1",
-    "apiVersion": 2,
+    "version": "1.1.2",
+    "apiVersion": 3,
     "kind": "extension",
     "authors": [{ "discordId": "1262793452236570667", "displayName": "may" }],
     "license": "GPL-3.0-only",

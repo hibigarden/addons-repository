@@ -2,10 +2,10 @@
   "id": "typing-speed",
   "name": "Typing speed",
   "description": "See your estimated words and characters per minute as you type.",
-  "apiVersion": 2,
+  "apiVersion": 3,
   "kind": "extension",
   "capabilities": [],
-  "version": "1.1.1",
+  "version": "1.1.2",
   "authors": [
     {
       "discordId": "1262793452236570667",

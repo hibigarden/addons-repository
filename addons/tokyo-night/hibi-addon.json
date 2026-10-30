@@ -2,8 +2,8 @@
   "id": "tokyo-night",
   "name": "tokyo night",
   "description": "tokyo night, storm, and light editor palettes.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "theme",
   "authors": [
     {

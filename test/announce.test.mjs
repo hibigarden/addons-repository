@@ -33,7 +33,7 @@ const entry = (id = 'hello', extra = {}) => ({
   name: id,
   description: 'a helpful addon.',
   version: '1.0.0',
-  apiVersion: 2,
+  apiVersion: 3,
   kind: 'extension',
   authors: [{ displayName: 'author' }],
   license: 'MIT',

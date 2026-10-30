@@ -2,8 +2,8 @@
   "id": "dracula",
   "name": "dracula",
   "description": "the classic purple-accented dracula dark palette.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "theme",
   "authors": [
     {

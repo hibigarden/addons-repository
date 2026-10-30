@@ -2,8 +2,8 @@
   "id": "rose-pine-dawn",
   "name": "rosé pine dawn",
   "description": "a pastel light palette with warm paper, rose, and lilac colors.",
-  "version": "1.0.0",
-  "apiVersion": 2,
+  "version": "1.0.1",
+  "apiVersion": 3,
   "kind": "theme",
   "authors": [
     {
