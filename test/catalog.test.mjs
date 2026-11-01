@@ -47,6 +47,7 @@ test('the catalog and nested packages are valid', async () => {
       'fnaf-jumpscare',
       'github-theme',
       'hibi-doom',
+      'hibitype',
       'one-dark-pro',
       'oneko',
       'rose-pine-dawn',

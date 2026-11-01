@@ -100,6 +100,22 @@
     }
   },
   {
+    "id": "hibitype",
+    "name": "hibitype",
+    "description": "fun little typing game, more stuff to be added idk, invoke by command prompt",
+    "version": "0.1.0",
+    "apiVersion": 3,
+    "kind": "extension",
+    "authors": [
+      {
+        "displayName": "schmayterling",
+        "github": "schmayterling"
+      }
+    ],
+    "license": "MIT",
+    "path": "addons/hibitype"
+  },
+  {
     "id": "one-dark-pro",
     "name": "one dark pro",
     "description": "atom-inspired dark colors with one dark pro syntax highlighting.",
